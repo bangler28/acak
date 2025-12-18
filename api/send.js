@@ -168,4 +168,4 @@ https://www.google.com/maps?q=${input.latitude},${input.longitude}
   } catch {
     return res.status(500).send("Gagal kirim");
   }
-                    }
+}
